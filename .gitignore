@@ -4,3 +4,4 @@
 .cache/
 config/includes.chroot/opt/nexwall-installer/payload.img.gz
 dist/
+config/bootloaders/splash.svg

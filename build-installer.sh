@@ -42,6 +42,9 @@ printf '%s\n' "$VERSION" > "$PAYLOAD/VERSION"
 printf '%s\n' "$SUM" > "$PAYLOAD/SHA256SUM"
 printf '%s\n' "$SIZE" > "$PAYLOAD/SIZE"
 
+# Boot screen: the Nexwall splash with the version of this build
+sed "s/@NEXWALL_VERSION@/$VERSION/g" config/bootloaders/splash.svg.in > config/bootloaders/splash.svg
+
 lb clean --purge || true
 # Explicit settings (the build must not drift to another Debian release).
 lb config \

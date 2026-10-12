@@ -1,0 +1,6 @@
+label live-@FLAVOUR@
+	menu label ^Install Nexwall Firewall
+	menu default
+	linux @LINUX@
+	initrd @INITRD@
+	append @APPEND_LIVE@
