@@ -51,6 +51,8 @@ lb config \
   --binary-images iso-hybrid \
   --archive-areas "main contrib non-free-firmware" \
   --debian-installer none \
+  --firmware-chroot false \
+  --firmware-binary false \
   --bootappend-live "boot=live components quiet"
 grep -q 'LB_DISTRIBUTION="trixie"' config/bootstrap || { echo "live-build is not set to trixie" >&2; grep LB_DISTRIBUTION config/bootstrap >&2; exit 1; }
 lb build
