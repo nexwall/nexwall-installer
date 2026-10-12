@@ -1,27 +1,27 @@
 # NEXWALL Installer Builder
 
-Builds a bootable x86-64 hybrid ISO that contains a full-disk NEXWALL `.img` and installs it onto an appliance's internal disk.
+Builds a bootable x86-64 hybrid ISO that contains the NEXWALL disk image and installs it onto an appliance's internal disk.
 
 ## Important assumptions
 
-- The input `.img` is a **raw, complete disk image** (partition table, partitions and bootloader included), not an update/package image.
-- Target appliances are x86-64 and can boot a Debian Live ISO in UEFI or legacy mode.
+- The input is the released **`.img.gz`** (about 1 GiB when decompressed), or a raw `.img`. It is a **complete disk image** (partition table, partitions and bootloader included), not an update/package image.
+- Target appliances are x86-64 and must boot in **UEFI**: the NEXWALL image itself does not boot on legacy BIOS, so a BIOS-only machine cannot run the installed system even if the installer starts.
 - Installing overwrites the selected target disk completely. Back up anything important first.
 - The ISO build requires a Debian 13 (trixie) amd64 build host with internet access and root/sudo access. The resulting ISO should be tested on the exact appliance model before deployment.
 
 ## Build
 
-1. Copy the released image into this project directory, for example `NEXWALL-1.2.3.img`.
+1. Copy the released image (`nexwall-26.1.1-x86-64-generic-squashfs-combined-efi.img.gz`) to the build host. Do not use the 32 GiB padded `.img` from the build output.
 2. Run:
 
    ```bash
-   sudo ./build-installer.sh NEXWALL-1.2.3.img 1.2.3
+   sudo ./build-installer.sh nexwall-26.1.1-x86-64-generic-squashfs-combined-efi.img.gz 26.1.1
    ```
 
-3. The output is `dist/NEXWALL-Installer-1.2.3.iso` and a companion `.sha256` file.
+3. The output is `dist/NEXWALL-Installer-26.1.1.iso` and a companion `.sha256` file.
 4. Write the ISO to a USB drive with Rufus. Boot the appliance from that USB.
 
-The build script embeds the image and its SHA-256 in the live filesystem. The installer checks the embedded image before offering installation, excludes the live USB disk from the target list, requires typing `INSTALL`, checks that the target is large enough, writes the image, and hashes the written image bytes for read-back verification.
+The build script embeds the image and its SHA-256 in the live filesystem. The installer checks the embedded image before offering installation, excludes the live USB disk from the target list, requires typing `INSTALL`, checks that the target is large enough, writes the image, and reads the written bytes back from the disk (direct I/O) and compares their SHA-256.
 
 ## Test checklist
 

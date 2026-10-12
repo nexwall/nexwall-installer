@@ -1,104 +1,103 @@
 #!/bin/bash
+# NEXWALL interactive disk installer. Runs on tty1 of the live system.
 set -Eeuo pipefail
 
 APP_DIR=/opt/nexwall-installer
-IMAGE="$APP_DIR/payload.img"
-HASH_FILE="$APP_DIR/SHA256SUM"
+IMAGE="$APP_DIR/payload.img.gz"
+HASH_FILE="$APP_DIR/SHA256SUM"      # SHA-256 of the DECOMPRESSED image
+SIZE_FILE="$APP_DIR/SIZE"           # size in bytes of the decompressed image
 VERSION_FILE="$APP_DIR/VERSION"
 LOG=/var/log/nexwall-installer.log
-exec > >(tee -a "$LOG") 2>&1
+TTY=/dev/tty1
 
-say() { whiptail --title "NEXWALL Installer" --msgbox "$1" 14 78; }
-fail() { say "ERROR: $1\n\nLog: $LOG"; exit 1; }
+: > "$LOG"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+
+# The dialogs talk to the console directly, so the log redirection never touches the screen.
+W() { whiptail --title "NEXWALL Installer" "$@" 3>&1 1>"$TTY" 2>&3 <"$TTY"; }
+say() { W --msgbox "$1" 14 78 || true; }
+fail() { log "ERROR: $1"; say "ERROR: $1\n\nLog: $LOG"; exit 1; }
 
 [[ $EUID -eq 0 ]] || { echo "Run as root"; exit 1; }
-[[ -t 0 ]] || { echo "Installer needs an interactive terminal (tty1)."; exit 1; }
-[[ -f "$IMAGE" && -s "$IMAGE" ]] || fail "The NEXWALL image is missing or empty."
-[[ -f "$HASH_FILE" && -f "$VERSION_FILE" ]] || fail "Release metadata is missing."
+for f in "$IMAGE" "$HASH_FILE" "$SIZE_FILE" "$VERSION_FILE"; do
+  [[ -s "$f" ]] || fail "Installer payload is incomplete ($f is missing or empty)."
+done
 VERSION=$(tr -d '\r\n' < "$VERSION_FILE")
-EXPECTED=$(awk 'NR==1 {print $1}' "$HASH_FILE")
-[[ "$EXPECTED" =~ ^[a-fA-F0-9]{64}$ ]] || fail "The embedded SHA-256 value is invalid."
+EXPECTED=$(awk 'NR==1 {print tolower($1)}' "$HASH_FILE")
+IMG_BYTES=$(tr -d '\r\n' < "$SIZE_FILE")
+[[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]] || fail "The embedded SHA-256 value is invalid."
+[[ "$IMG_BYTES" =~ ^[0-9]+$ ]] || fail "The embedded image size is invalid."
+log "NEXWALL $VERSION, image $IMG_BYTES bytes, sha256 $EXPECTED"
 
-whiptail --title "NEXWALL Installer $VERSION" --yesno \
-"This utility installs NEXWALL $VERSION to an internal disk.\n\nALL DATA on the selected target disk will be erased.\n\nContinue to disk selection?" 14 78 || exit 0
+W --yesno "This utility installs NEXWALL $VERSION on an internal disk.\n\nALL DATA on the disk you select will be erased.\n\nContinue to disk selection?" 14 78 || exit 0
 
-ACTUAL=$(sha256sum "$IMAGE" | awk '{print $1}')
-[[ "${ACTUAL,,}" == "${EXPECTED,,}" ]] || fail "The embedded image failed SHA-256 verification. Do not install."
-IMG_BYTES=$(stat -c '%s' "$IMAGE")
+# 1. Verify the payload before touching any disk.
+W --infobox "Checking the installation image..." 7 60
+gzip -t "$IMAGE" || fail "The embedded image is damaged (gzip test failed). Do not install."
+ACTUAL=$(gzip -dc "$IMAGE" | sha256sum | awk '{print $1}')
+[[ "$ACTUAL" == "$EXPECTED" ]] || fail "The embedded image failed SHA-256 verification. Do not install."
+log "payload verified"
 
-# Determine which physical disk hosts the live USB medium, then exclude it.
-LIVE_SRC=$(findmnt -rn -o SOURCE /run/live/medium 2>/dev/null | head -n1 || true)
+# 2. Find the disk the live medium runs from, so it is never offered.
 LIVE_DISK=""
-if [[ -n "$LIVE_SRC" ]]; then
-  LIVE_SRC=$(readlink -f "$LIVE_SRC" 2>/dev/null || printf '%s' "$LIVE_SRC")
-  if [[ "$LIVE_SRC" == /dev/* && -b "$LIVE_SRC" ]]; then
-    PARENT=$(lsblk -ndo PKNAME "$LIVE_SRC" 2>/dev/null | head -n1 || true)
-    if [[ -n "$PARENT" ]]; then LIVE_DISK="/dev/$PARENT"; else LIVE_DISK="$LIVE_SRC"; fi
-  fi
-fi
+for MP in /run/live/medium /run/live /lib/live/mount/medium; do
+  SRC=$(findmnt -rn -o SOURCE "$MP" 2>/dev/null | head -n1 || true)
+  [[ "$SRC" == /dev/* ]] || continue
+  SRC=$(readlink -f "$SRC")
+  PARENT=$(lsblk -ndo PKNAME "$SRC" 2>/dev/null | head -n1 || true)
+  LIVE_DISK=${PARENT:+/dev/$PARENT}
+  LIVE_DISK=${LIVE_DISK:-$SRC}
+  break
+done
+log "live disk: ${LIVE_DISK:-unknown}"
 
-# Also check the live mount's backing device in case /run/live/medium reports an alias.
-if [[ -z "$LIVE_DISK" ]]; then
-  LIVE_SRC=$(findmnt -rn -o SOURCE /run/live 2>/dev/null | head -n1 || true)
-  if [[ "$LIVE_SRC" == /dev/* ]]; then
-    LIVE_SRC=$(readlink -f "$LIVE_SRC" 2>/dev/null || printf '%s' "$LIVE_SRC")
-    PARENT=$(lsblk -ndo PKNAME "$LIVE_SRC" 2>/dev/null | head -n1 || true)
-    if [[ -n "$PARENT" ]]; then LIVE_DISK="/dev/$PARENT"; elif [[ -b "$LIVE_SRC" ]]; then LIVE_DISK="$LIVE_SRC"; fi
-  fi
-fi
-
+# 3. Eligible targets: whole, non-removable disks that are large enough.
 MENU=()
-while read -r NAME TYPE RM SIZE MODEL; do
-  [[ "$TYPE" == disk ]] || continue
-  [[ "$RM" == 0 ]] || continue
-  [[ -b "$NAME" ]] || continue
-  # Never offer the USB/live medium as a target.
-  [[ -n "$LIVE_DISK" && "$(readlink -f "$NAME")" == "$(readlink -f "$LIVE_DISK")" ]] && continue
+while read -r NAME TYPE RM SIZE TRAN MODEL; do
+  [[ "$TYPE" == disk && "$RM" == 0 && -b "$NAME" ]] || continue
+  [[ -z "$LIVE_DISK" || "$(readlink -f "$NAME")" != "$LIVE_DISK" ]] || continue
   BYTES=$(blockdev --getsize64 "$NAME" 2>/dev/null || echo 0)
   (( BYTES >= IMG_BYTES )) || continue
-  LABEL="$NAME | $SIZE | ${MODEL:-disk}"
-  MENU+=("$NAME" "$LABEL")
-done < <(lsblk -dnpo NAME,TYPE,RM,SIZE,MODEL)
+  MENU+=("$NAME" "$SIZE ${TRAN:--} ${MODEL:-disk}")
+done < <(lsblk -dnpo NAME,TYPE,RM,SIZE,TRAN,MODEL)
 
-((${#MENU[@]} >= 2)) || fail "No eligible internal disk was found. Confirm the disk is detected, non-removable, and at least ${IMG_BYTES} bytes. The live USB is intentionally excluded."
-TARGET=$(whiptail --title "Select target disk" --menu \
-"Choose the internal disk to erase and install NEXWALL $VERSION onto.\n\nThe live USB is excluded. Only disks large enough for the image are shown." \
-20 90 8 "${MENU[@]}" 3>&1 1>&2 2>&3) || exit 0
-[[ -b "$TARGET" ]] || fail "Selected target is no longer available."
-[[ -z "$LIVE_DISK" || "$(readlink -f "$TARGET")" != "$(readlink -f "$LIVE_DISK")" ]] || fail "Safety check blocked the live USB as a target."
+if [[ -z "$LIVE_DISK" ]]; then
+  W --yesno "Warning: the installation USB could not be identified, so it is NOT excluded from the list. Check the disk names carefully.\n\nContinue?" 12 78 || exit 0
+fi
+((${#MENU[@]} >= 2)) || fail "No eligible internal disk was found. The disk must be detected, non-removable and at least $IMG_BYTES bytes. The installation USB is excluded."
 
-TARGET_BYTES=$(blockdev --getsize64 "$TARGET")
-(( TARGET_BYTES >= IMG_BYTES )) || fail "Target disk is smaller than the image."
+TARGET=$(W --menu "Choose the disk to ERASE and install NEXWALL $VERSION on.\n\nThe installation USB is not listed." 20 90 8 "${MENU[@]}") || exit 0
+[[ -b "$TARGET" ]] || fail "The selected disk is no longer available."
+[[ -z "$LIVE_DISK" || "$(readlink -f "$TARGET")" != "$LIVE_DISK" ]] || fail "Safety check blocked the installation USB as a target."
 
-whiptail --title "FINAL CONFIRMATION" --inputbox \
-"You are about to ERASE ALL DATA on:\n\n$TARGET\n\nImage: NEXWALL $VERSION\nImage size: $IMG_BYTES bytes\n\nType exactly INSTALL to proceed." 18 78 3>&1 1>&2 2>&3 | grep -qx 'INSTALL' || exit 0
+ANSWER=$(W --inputbox "You are about to ERASE ALL DATA on:\n\n$TARGET\n\nNEXWALL $VERSION, $IMG_BYTES bytes.\n\nType INSTALL (capital letters) to proceed." 18 78 "") || exit 0
+[[ "$ANSWER" == "INSTALL" ]] || exit 0
 
-whiptail --title "Installing NEXWALL" --infobox \
-"Writing NEXWALL $VERSION to $TARGET.\nDo not power off or remove the USB.\nProgress is being written to $LOG." 10 78
-sync
-# Unmount any mounted partitions on the target before writing the raw disk image.
+# 4. Write.
+log "writing to $TARGET"
+W --infobox "Writing NEXWALL $VERSION to $TARGET.\n\nDo not power off or remove the USB.\nThis takes a few minutes." 10 70
 while read -r PART; do
-  [[ -n "$PART" ]] || continue
-  umount "$PART" 2>/dev/null || true
+  [[ -n "$PART" ]] && umount "$PART" 2>/dev/null || true
 done < <(lsblk -lnpo NAME "$TARGET" | tail -n +2)
+swapoff -a 2>/dev/null || true
 
 set +e
-dd if="$IMAGE" of="$TARGET" bs=16M iflag=fullblock conv=fsync status=progress
-DD_RC=$?
+gzip -dc "$IMAGE" | dd of="$TARGET" bs=16M iflag=fullblock oflag=direct conv=fsync status=none 2>>"$LOG"
+RC=("${PIPESTATUS[@]}")
 set -e
-(( DD_RC == 0 )) || fail "Writing the image failed (dd exit code $DD_RC). Do not remove power; review $LOG."
+(( RC[0] == 0 && RC[1] == 0 )) || fail "Writing the image failed (gzip ${RC[0]}, dd ${RC[1]}). Review $LOG."
 sync
+blockdev --flushbufs "$TARGET" 2>/dev/null || true
+udevadm settle 2>/dev/null || true
 
-# Hash exactly the source image length; the target disk may be larger than the image.
-READBACK=$(head -c "$IMG_BYTES" "$TARGET" | sha256sum | awk '{print $1}')
-[[ "${READBACK,,}" == "${EXPECTED,,}" ]] || fail "Read-back SHA-256 verification failed. Do not deploy this disk."
+# 5. Read back from the disk itself (direct I/O, no page cache) and compare.
+W --infobox "Verifying what was written to $TARGET..." 7 70
+READBACK=$(dd if="$TARGET" bs=16M iflag=direct,count_bytes count="$IMG_BYTES" status=none 2>>"$LOG" | sha256sum | awk '{print $1}')
+log "read-back sha256 $READBACK"
+[[ "$READBACK" == "$EXPECTED" ]] || fail "Read-back verification failed. Do not deploy this disk."
 
-whiptail --title "Installation complete" --yesno \
-"NEXWALL $VERSION was written and verified successfully.\n\nRemove the USB installation media, then choose Yes to reboot." 14 78
-ANSWER=$?
-if (( ANSWER == 0 )); then
-  sync
-  reboot
+if W --yesno "NEXWALL $VERSION was written and verified.\n\nRemove the USB installation media, then choose Yes to restart. The first start of the new system opens the setup wizard." 14 78; then
+  sync; systemctl reboot
 else
-  say "Installation verified. You may now shut down, remove the USB, and boot from the internal disk."
+  say "Installation verified. You can power off, remove the USB and boot from the internal disk."
 fi

@@ -1,8 +1,9 @@
 [Unit]
 Description=NEXWALL interactive disk installer
-After=local-fs.target systemd-user-sessions.service getty@tty1.service
-Wants=getty@tty1.service
-ConditionPathExists=/opt/nexwall-installer/payload.img
+After=local-fs.target systemd-user-sessions.service
+Before=getty@tty1.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/opt/nexwall-installer/payload.img.gz
 
 [Service]
 Type=oneshot
@@ -14,7 +15,7 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
-RemainAfterExit=yes
+ExecStopPost=-/bin/systemctl --no-block start getty@tty1.service
 
 [Install]
 WantedBy=multi-user.target

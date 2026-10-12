@@ -2,5 +2,5 @@
 .binary/
 .build/
 .cache/
-config/includes.chroot/opt/nexwall-installer/payload.img
+config/includes.chroot/opt/nexwall-installer/payload.img.gz
 dist/
