@@ -23,6 +23,14 @@ Builds a bootable x86-64 hybrid ISO that contains the NEXWALL disk image and ins
 
 The build script embeds the image and its SHA-256 in the live filesystem. The installer checks the embedded image before offering installation, excludes the live USB disk from the target list, requires typing `INSTALL`, checks that the target is large enough, writes the image, and reads the written bytes back from the disk (direct I/O) and compares their SHA-256.
 
+## Language
+
+The first screen asks for the language of the installer: English, Español or Português. Every message after it is shown in that language.
+
+## Use
+
+The same ISO serves every kind of target: attach it as a CD/DVD to a virtual machine, write it to a USB stick (Rufus in DD or ISO mode, balenaEtcher, `dd`), or use it from the remote console of an appliance.
+
 ## Test checklist
 
 - Test UEFI boot and legacy BIOS boot if both are supported by your appliances.
