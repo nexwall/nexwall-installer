@@ -1,0 +1,7 @@
+whiptail
+util-linux
+coreutils
+udev
+systemd-sysv
+live-boot
+live-config
